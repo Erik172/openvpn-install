@@ -264,7 +264,12 @@ def ensure_status_lines() -> bool:
 
 
 def reload_openvpn_service() -> None:
-    run_cmd(["systemctl", "reload", "openvpn-server@server"])
+    # Algunos sistemas no soportan 'reload' para esta unidad.
+    # Intentar 'try-reload-or-restart' y, si falla, forzar 'restart'.
+    try:
+        run_cmd(["systemctl", "try-reload-or-restart", "openvpn-server@server"])
+    except CliError:
+        run_cmd(["systemctl", "restart", "openvpn-server@server"])
 
 
 def cmd_add(args: argparse.Namespace) -> None:
@@ -332,7 +337,7 @@ def cmd_setup_status(args: argparse.Namespace) -> None:
     if changed:
         reload_openvpn_service()
         print(
-            "Directivas de estado añadidas a server.conf y servicio recargado."
+            "Directivas de estado añadidas a server.conf y servicio recargado/reiniciado."
         )
     else:
         print("Las directivas de estado ya están presentes. Nada que hacer.")
