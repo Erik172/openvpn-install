@@ -206,40 +206,122 @@ def list_connected() -> List[dict]:
             f"No existe el archivo de estado: {STATUS_LOG}. Ejecute setup-status primero."
         )
     lines = STATUS_LOG.read_text(encoding="utf-8", errors="ignore").splitlines()
+
+    # Detectar formato v2 (líneas con prefijo CLIENT_LIST,/ROUTING_TABLE,)
+    has_v2_client = any(l.startswith("CLIENT_LIST,") for l in lines) or any(
+        l.startswith("HEADER,CLIENT_LIST") for l in lines
+    )
+
     clients: List[dict] = []
-    in_client_list = False
-    reader: Optional[csv.reader] = None
-    # openvpn-status.log v2 es CSV con encabezados simples por bloque
+    if has_v2_client:
+        temp: dict = {}
+        route_by_cn: dict = {}
+        for line in lines:
+            if line.startswith("CLIENT_LIST,"):
+                parts = line.split(",")
+                # CLIENT_LIST,Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since,
+                # Username,Client ID,Peer ID,Data Channel Crypto
+                cn = parts[1] if len(parts) > 1 else ""
+                real_addr = parts[2] if len(parts) > 2 else ""
+                try:
+                    rx = int(parts[3]) if len(parts) > 3 else None
+                except ValueError:
+                    rx = None
+                try:
+                    tx = int(parts[4]) if len(parts) > 4 else None
+                except ValueError:
+                    tx = None
+                since = parts[5] if len(parts) > 5 else ""
+                temp[cn] = {
+                    "name": cn,
+                    "real_address": real_addr,
+                    "bytes_received": rx,
+                    "bytes_sent": tx,
+                    "connected_since": since,
+                    "virtual_address": None,
+                }
+            elif line.startswith("ROUTING_TABLE,"):
+                parts = line.split(",")
+                # ROUTING_TABLE,Virtual Address,Common Name,Real Address,Last Ref
+                virt = parts[1] if len(parts) > 1 else None
+                cn = parts[2] if len(parts) > 2 else None
+                if cn:
+                    route_by_cn[cn] = virt
+        # Unir rutas
+        for cn, info in temp.items():
+            info["virtual_address"] = route_by_cn.get(cn)
+            clients.append(info)
+        return clients
+
+    # Formato clásico (texto): "OpenVPN CLIENT LIST" y "ROUTING TABLE"
+    in_clients = False
+    in_routes = False
+    header_skipped = False
+    temp: dict = {}
+    route_by_cn: dict = {}
     for line in lines:
-        if line.strip() == "CLIENT LIST":
-            in_client_list = True
+        s = line.strip()
+        if s.startswith("OpenVPN CLIENT LIST") or s == "CLIENT LIST":
+            in_clients = True
+            in_routes = False
+            header_skipped = False
             continue
-        if line.strip() in ("ROUTING TABLE", "GLOBAL STATS", "END"):
-            in_client_list = False
-        if not in_client_list:
+        if s.startswith("ROUTING TABLE"):
+            in_clients = False
+            in_routes = True
+            header_skipped = False
             continue
-        if not line or line.startswith("Updated,"):
+        if s.startswith("GLOBAL STATS") or s == "END":
+            in_clients = False
+            in_routes = False
             continue
-        # Formato esperado: Common Name,Real Address,Bytes Received,Bytes Sent,Connected Since,Virtual Address
-        row = [c.strip() for c in line.split(",")]
-        if len(row) < 5:
-            continue
-        common_name = row[0]
-        real_address = row[1]
-        bytes_received = int(row[2]) if row[2].isdigit() else None
-        bytes_sent = int(row[3]) if row[3].isdigit() else None
-        connected_since = row[4]
-        virtual_address = row[5] if len(row) > 5 else None
-        clients.append(
-            {
-                "name": common_name,
-                "real_address": real_address,
-                "virtual_address": virtual_address,
-                "bytes_received": bytes_received,
-                "bytes_sent": bytes_sent,
-                "connected_since": connected_since,
+
+        if in_clients:
+            if not s or s.startswith("Updated,"):
+                continue
+            # Saltar la línea de cabeceras si existe
+            if not header_skipped and s.lower().startswith("common name,"):
+                header_skipped = True
+                continue
+            parts = [c.strip() for c in line.split(",")]
+            if len(parts) < 5:
+                continue
+            cn = parts[0]
+            real_addr = parts[1]
+            try:
+                rx = int(parts[2])
+            except ValueError:
+                rx = None
+            try:
+                tx = int(parts[3])
+            except ValueError:
+                tx = None
+            since = parts[4]
+            temp[cn] = {
+                "name": cn,
+                "real_address": real_addr,
+                "bytes_received": rx,
+                "bytes_sent": tx,
+                "connected_since": since,
+                "virtual_address": None,
             }
-        )
+        elif in_routes:
+            if not s:
+                continue
+            if not header_skipped and s.lower().startswith("virtual address,"):
+                header_skipped = True
+                continue
+            parts = [c.strip() for c in line.split(",")]
+            if len(parts) < 2:
+                continue
+            virt = parts[0]
+            cn = parts[1] if len(parts) > 1 else None
+            if cn:
+                route_by_cn[cn] = virt
+
+    for cn, info in temp.items():
+        info["virtual_address"] = route_by_cn.get(cn)
+        clients.append(info)
     return clients
 
 
