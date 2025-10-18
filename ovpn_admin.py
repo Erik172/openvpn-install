@@ -340,7 +340,15 @@ def cmd_setup_status(args: argparse.Namespace) -> None:
             "Directivas de estado añadidas a server.conf y servicio recargado/reiniciado."
         )
     else:
-        print("Las directivas de estado ya están presentes. Nada que hacer.")
+        # Si las directivas ya existen pero el archivo aún no está creado,
+        # forzar recarga/reinicio para que OpenVPN lo genere.
+        if not STATUS_LOG.exists():
+            reload_openvpn_service()
+            print(
+                "Las directivas ya estaban presentes. Servicio recargado/reiniciado para generar el archivo de estado."
+            )
+        else:
+            print("Las directivas de estado ya están presentes. Nada que hacer.")
 
 
 def build_parser() -> argparse.ArgumentParser:
